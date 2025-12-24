@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Merry Christmas - Clean</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'deep-bg': '#020408',
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #020408; font-family: 'Inter', sans-serif; }
+        #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; }
+        .interactive { pointer-events: auto; }
+        
+        .glass-panel {
+            background: rgba(20, 20, 20, 0.6);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+        }
+    </style>
+
+    <!-- Import Maps -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    
+    <!-- MediaPipe Hands & Utils -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body class="text-white antialiased">
+
+    <!-- 3D Canvas -->
+    <div id="canvas-container"></div>
+
+    <!-- UI Overlay -->
+    <div id="ui-layer" class="flex flex-col justify-between p-6">
+        
+        <!-- Header -->
+        <header class="flex justify-between items-start">
+            <div class="glass-panel p-6 rounded-2xl interactive max-w-md border-l-4 border-yellow-400">
+                <h1 class="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 via-red-500 to-yellow-300 tracking-tighter">
+                    MERRY CHRISTMAS
+                </h1>
+                <p class="text-sm text-gray-400 mt-2 font-light">
+                    最终纯净版<br>
+                    <span class="text-yellow-400 text-xs uppercase tracking-widest">无调试, 照片绝对居中</span>
+                </p>
+            </div>
+
+            <!-- Status -->
+            <div class="glass-panel px-4 py-2 rounded-full flex items-center gap-3">
+                <div id="camera-status-dot" class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
+                <span id="status-text" class="text-xs font-bold text-gray-300 tracking-wider">初始化中...</span>
+            </div>
+        </header>
+
+        <!-- Notification -->
+        <div id="notification-area" class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none opacity-0 transition-all duration-500" style="display: none;">
+            <h2 id="gesture-name" class="text-6xl font-black text-white italic tracking-tighter drop-shadow-[0_0_20px_rgba(255,255,255,0.5)]">
+                准备就绪
+            </h2>
+            <p id="gesture-desc" class="text-white text-lg mt-2 font-medium tracking-[0.3em] uppercase">等待输入</p>
+        </div>
+
+        <!-- Footer Controls -->
+        <footer class="flex justify-between items-end">
+            <div class="glass-panel p-4 rounded-xl hidden md:block">
+                <h3 class="text-xs font-bold text-white mb-2 uppercase">操作说明</h3>
+                <ul class="text-xs text-gray-400 space-y-1">
+                    <li><i class="fa-solid fa-hand-fist w-5"></i> 握拳：合成圣诞树</li>
+                    <li><i class="fa-solid fa-hand w-5"></i> 张开：散开</li>
+                    <li><i class="fa-solid fa-hand-point-up w-5"></i> 捏手指：看照片</li>
+                </ul>
+            </div>
+
+            <div class="flex flex-col gap-3 interactive">
+                <label for="image-upload" class="glass-panel px-6 py-3 rounded-xl cursor-pointer hover:bg-white/5 transition-colors flex items-center gap-3 group">
+                    <i class="fa-solid fa-images text-white group-hover:scale-110 transition-transform"></i>
+                    <span class="font-bold text-sm">添加照片</span>
+                    <input type="file" id="image-upload" accept="image/*" multiple class="hidden">
+                </label>
+                
+                <button id="toggle-camera" class="glass-panel px-6 py-3 rounded-xl hover:bg-white/5 transition-colors flex items-center justify-center gap-3">
+                    <i class="fa-solid fa-camera text-red-400"></i>
+                    <span class="font-bold text-sm">重启摄像头</span>
+                </button>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Hidden Video -->
+    <video id="input-video" class="hidden" playsinline></video>
+
+    <!-- Audio Element -->
+    <audio id="bg-music" loop>
+        <source src="music.mp3" type="audio/mpeg">
+    </-audio>
+
+    <!-- Main Logic -->
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // --- Config ---
+        const CONFIG = {
+            colors: {
+                bg: 0x020408,
+                frameGold: 0xd4af37,
+                starColor: 0xffd700
+            },
+            bloom: {
+                threshold: 0.2,
+                strength: 1.2,
+                radius: 0.5
+            },
+            tree: {
+                height: 14,
+                radius: 5,
+                particleCount: 3000
+            }
+        };
+
+        // --- State ---
+        const STATE = {
+            mode: 'GATHERED', // GATHERED, SCATTERED, FOCUSED
+            targetRotation: { x: 0, y: 0 },
+            isHandDetected: false,
+            focusedPhotoIndex: -1,
+            audioInitialized: false,
+            cameraInitialized: false
+        };
+
+        // --- Scene Setup ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(CONFIG.colors.bg);
+        scene.fog = new THREE.FogExp2(CONFIG.colors.bg, 0.02);
+
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 2, 22);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0;
+        container.appendChild(renderer.domElement);
+
+        // --- Post Processing ---
+        const renderScene = new RenderPass(scene, camera);
+        const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+        bloomPass.threshold = CONFIG.bloom.threshold;
+        bloomPass.strength = CONFIG.bloom.strength;
+        bloomPass.radius = CONFIG.bloom.radius;
+
+        const composer = new EffectComposer(renderer);
+        composer.addPass(renderScene);
+        composer.addPass(bloomPass);
+
+        // --- Lighting ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        dirLight.position.set(5, 10, 7);
+        scene.add(dirLight);
+
+        // --- Helper: Generate Star Texture ---
+        function createStarTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const context = canvas.getContext('2d');
+            const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16);
+            gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+            gradient.addColorStop(0.4, 'rgba(255, 255, 255, 0.5)');
+            gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, 32, 32);
+            return new THREE.CanvasTexture(canvas);
+        }
+        const starTexture = createStarTexture();
+
+        // --- Create Top Star ---
+        function createTopStar() {
+            const shape = new THREE.Shape();
+            const outerRadius = 1.2;
+            const innerRadius = 0.5;
+            const points = 5;
+            
+            for (let i = 0; i < points * 2; i++) {
+                const radius = i % 2 === 0 ? outerRadius : innerRadius;
+                const angle = (i * Math.PI) / points - Math.PI / 2;
+                const x = Math.cos(angle) * radius;
+                const y = Math.sin(angle) * radius;
+                if (i === 0) shape.moveTo(x, y);
+                else shape.lineTo(x, y);
+            }
+            shape.closePath();
+
+            const geometry = new THREE.ShapeGeometry(shape);
+            const material = new THREE.MeshBasicMaterial({ 
+                color: CONFIG.colors.starColor,
+                side: THREE.DoubleSide
+            });
+            
+            const star = new THREE.Mesh(geometry, material);
+            const starLight = new THREE.PointLight(CONFIG.colors.starColor, 5, 10);
+            star.add(starLight);
+            star.position.set(0, 7.5, 0);
+            scene.add(star);
+            return star;
+        }
+        const topStar = createTopStar();
+
+        // --- Create Colorful Cone Particles ---
+        function createColorfulParticles() {
+            const count = CONFIG.tree.particleCount;
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(count * 3);
+            const colors = new Float32Array(count * 3);
+            const sizes = new Float32Array(count);
+            const randoms = new Float32Array(count);
+
+            for (let i = 0; i < count; i++) {
+                const yNorm = Math.random(); 
+                const y = (yNorm * CONFIG.tree.height) - (CONFIG.tree.height / 2);
+                const radiusAtY = CONFIG.tree.radius * (1.0 - yNorm);
+                const theta = Math.random() * Math.PI * 2;
+                const r = Math.sqrt(Math.random()) * radiusAtY;
+
+                const x = r * Math.cos(theta);
+                const z = r * Math.sin(theta);
+
+                positions[i * 3] = x;
+                positions[i * 3 + 1] = y;
+                positions[i * 3 + 2] = z;
+
+                const hue = yNorm * 0.8; 
+                const color = new THREE.Color().setHSL(hue, 1.0, 0.6);
+
+                colors[i * 3] = color.r;
+                colors[i * 3 + 1] = color.g;
+                colors[i * 3 + 2] = color.b;
+
+                sizes[i] = Math.random() * 0.4 + 0.1;
+                randoms[i] = Math.random();
+            }
+
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+            geometry.setAttribute('aRandom', new THREE.BufferAttribute(randoms, 1));
+
+            const material = new THREE.PointsMaterial({
+                size: 0.5,
+                map: starTexture,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.8,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                sizeAttenuation: true
+            });
+
+            const points = new THREE.Points(geometry, material);
+            scene.add(points);
+            
+            points.userData = {
+                originalPositions: positions.slice(),
+                scatteredPositions: new Float32Array(count * 3)
+            };
+
+            for(let i=0; i<count; i++) {
+                points.userData.scatteredPositions[i*3] = (Math.random() - 0.5) * 50;
+                points.userData.scatteredPositions[i*3+1] = (Math.random() - 0.5) * 50;
+                points.userData.scatteredPositions[i*3+2] = (Math.random() - 0.5) * 50;
+            }
+
+            return points;
+        }
+
+        const particleSystem = createColorfulParticles();
+
+        // --- Photos ---
+        const textureLoader = new THREE.TextureLoader();
+        const photos = [];
+        
+        function createPhoto(url) {
+            textureLoader.load(url, (tex) => {
+                tex.colorSpace = THREE.SRGBColorSpace;
+                const aspect = tex.image.width / tex.image.height;
+                const height = 1.5;
+                const width = height * aspect;
+                
+                const geo = new THREE.PlaneGeometry(width, height);
+                const mat = new THREE.MeshStandardMaterial({
+                    map: tex,
+                    side: THREE.DoubleSide,
+                    roughness: 0.4,
+                    metalness: 0.1,
+                    color: 0xffffff
+                });
+                
+                const frameGeo = new THREE.PlaneGeometry(width + 0.1, height + 0.1);
+                const frameMat = new THREE.MeshStandardMaterial({
+                    color: CONFIG.colors.frameGold,
+                    roughness: 0.6,
+                    metalness: 0.8
+                });
+                const frame = new THREE.Mesh(frameGeo, frameMat);
+                frame.position.z = -0.01;
+
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.add(frame);
+                
+                const y = (Math.random() * 8) - 4;
+                const r = 3.5 * (1 - (y + 4) / 8);
+                const theta = Math.random() * Math.PI * 2;
+                
+                mesh.position.set(r * Math.cos(theta), y, r * Math.sin(theta));
+                mesh.rotation.set(Math.random(), Math.random(), Math.random());
+                
+                const data = {
+                    mesh: mesh,
+                    type: 'photo',
+                    originalPos: mesh.position.clone(),
+                    originalScale: new THREE.Vector3(1, 1, 1),
+                    targetScale: new THREE.Vector3(1, 1, 1), // Add targetScale
+                    scatteredPos: new THREE.Vector3((Math.random()-0.5)*30, (Math.random()-0.5)*30, (Math.random()-0.5)*30),
+                    rotSpeed: { x: Math.random()*0.01, y: Math.random()*0.01 }
+                };
+                
+                photos.push(data);
+                scene.add(mesh);
+            });
+        }
+
+        for(let i=0; i<8; i++) createPhoto(`https://picsum.photos/seed/${i+2600}/300/400.jpg`);
+
+        // --- Interaction Handlers ---
+        const audio = document.getElementById('bg-music');
+        const statusText = document.getElementById('status-text');
+        const statusDot = document.getElementById('camera-status-dot');
+
+        function startExperience() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => {});
+            }
+            if (!STATE.audioInitialized) {
+                audio.volume = 0.5;
+                audio.play().then(() => { STATE.audioInitialized = true; }).catch(e => {});
+            }
+            document.body.classList.add('ui-hidden');
+        }
+
+        document.addEventListener('click', (e) => {
+            if (e.target.closest('.interactive')) return;
+            startExperience();
+        });
+
+        // --- STABLE GESTURE LOGIC ---
+        const videoElement = document.getElementById('input-video');
+        const notificationArea = document.getElementById('notification-area');
+        const gestureName = document.getElementById('gesture-name');
+        const gestureDesc = document.getElementById('gesture-desc');
+        const toggleBtn = document.getElementById('toggle-camera');
+
+        let isCameraActive = false;
+        let cameraObj = null;
+
+        function showNotification(name, desc) {
+            gestureName.innerText = name;
+            gestureDesc.innerText = desc;
+            notificationArea.style.opacity = '1';
+            clearTimeout(window.notificationTimeout);
+            window.notificationTimeout = setTimeout(() => {
+                notificationArea.style.opacity = '0';
+            }, 2000);
+        }
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                STATE.isHandDetected = true;
+                const landmarks = results.multiHandLandmarks[0];
+                const wrist = landmarks[0];
+
+                // --- FINGER COUNT LOGIC (using a simpler, more reliable method) ---
+                const tips = [8, 12, 16, 20]; // Index, Middle, Ring, Pinky
+                let foldedFingers = 0;
+                tips.forEach(tipIdx => {
+                    const tip = landmarks[tipIdx];
+                    const pip = landmarks[tipIdx - 2]; // Intermediate joint
+                    // A simple check: if the tip's Y is greater than the pip's Y, it's likely folded down.
+                    if (tip.y > pip.y) {
+                        foldedFingers++;
+                    }
+                });
+
+                // --- GESTURE DECISION LOGIC (Improved for reliability) ---
+                const thumbTip = landmarks[4];
+                const indexTip = landmarks[8];
+                const pinchDist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+
+                // 1. PINCH: Thumb/Index are close, AND it's not a fist (fewer than 3 fingers folded).
+                if (pinchDist < 0.06 && foldedFingers < 3) {
+                    if (STATE.mode !== 'FOCUSED') {
+                        STATE.mode = 'FOCUSED';
+                        // Cycle to the next photo instead of random
+                        STATE.focusedPhotoIndex = (STATE.focusedPhotoIndex + 1) % photos.length;
+                        showNotification('捏合', '聚焦照片');
+                    }
+                    return; // Prioritize pinch gesture
+                }
+
+                // 2. FIST: 3 or more non-thumb fingers are folded.
+                if (foldedFingers >= 3) {
+                    if (STATE.mode !== 'GATHERED') {
+                        STATE.mode = 'GATHERED';
+                        showNotification('握拳', '合成圣诞树');
+                    }
+                }
+                // 3. OPEN HAND: 1 or fewer fingers are folded (and not a pinch).
+                else if (foldedFingers <= 1) {
+                    if (STATE.mode !== 'SCATTERED') {
+                        STATE.mode = 'SCATTERED';
+                        showNotification('张开', '散开');
+                    }
+                    // Allow scene rotation only in scattered mode
+                    STATE.targetRotation.y = (wrist.x - 0.5) * 4;
+                    STATE.targetRotation.x = (wrist.y - 0.5) * 4;
+                }
+
+            } else {
+                STATE.isHandDetected = false;
+            }
+        }
+
+        // --- Camera Initialization ---
+        async function initCamera() {
+            if (STATE.cameraInitialized) return;
+            
+            try {
+                statusText.innerText = "请求摄像头...";
+                statusDot.className = "w-2 h-2 rounded-full bg-yellow-500 animate-pulse";
+                
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                videoElement.srcObject = stream;
+                videoElement.play();
+                
+                const hands = new Hands({locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                }});
+                
+                hands.setOptions({
+                    maxNumHands: 1,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+                
+                hands.onResults(onResults);
+
+                cameraObj = new Camera(videoElement, {
+                    onFrame: async () => { await hands.send({image: videoElement}); },
+                    width: 640, height: 480
+                });
+                
+                await cameraObj.start();
+                
+                isCameraActive = true;
+                STATE.cameraInitialized = true;
+                statusText.innerText = "系统运行中";
+                statusDot.className = "w-2 h-2 rounded-full bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.8)]";
+                toggleBtn.innerHTML = '<i class="fa-solid fa-power-off text-red-500"></i><span class="font-bold text-sm">关闭</span>';
+                
+                startExperience();
+
+            } catch (err) {
+                console.error(err);
+                statusText.innerText = "摄像头错误";
+                statusDot.className = "w-2 h-2 rounded-full bg-red-500";
+                startExperience();
+            }
+        }
+
+        initCamera();
+
+        toggleBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            startExperience();
+            
+            if (isCameraActive) {
+                if (cameraObj) {
+                    const stream = videoElement.srcObject;
+                    const tracks = stream.getTracks();
+                    tracks.forEach(track => track.stop());
+                    videoElement.srcObject = null;
+                }
+                isCameraActive = false;
+                STATE.isHandDetected = false;
+                statusText.innerText = "待机";
+                statusDot.className = "w-2 h-2 rounded-full bg-red-500";
+                toggleBtn.innerHTML = '<i class="fa-solid fa-camera text-red-400"></i><span class="font-bold text-sm">重启摄像头</span>';
+            } else {
+                initCamera();
+            }
+        });
+
+        const fileInput = document.getElementById('image-upload');
+        fileInput.addEventListener('change', (e) => {
+            e.stopPropagation();
+            startExperience();
+            const files = e.target.files;
+            if (files.length > 0) {
+                photos.forEach(p => scene.remove(p.mesh));
+                photos.length = 0;
+                Array.from(files).forEach(file => createPhoto(URL.createObjectURL(file)));
+                showNotification('上传', '更新相册');
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- Fullscreen UI Toggle ---
+        document.addEventListener('fullscreenchange', () => {
+            const isFullscreen = !!document.fullscreenElement;
+            const header = document.querySelector('#ui-layer > header');
+            const footer = document.querySelector('#ui-layer > footer');
+
+            if (isFullscreen) {
+                header.classList.add('hidden');
+                footer.classList.add('hidden');
+            } else {
+                header.classList.remove('hidden');
+                footer.classList.remove('hidden');
+            }
+        });
+
+        // --- Animation Loop ---
+        const clock = new THREE.Clock();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = clock.getElapsedTime();
+            const delta = clock.getDelta();
+
+            // 1. Animate Top Star with Breathing Effect
+            const pulse = (Math.sin(time * 1.5) + 1) / 2; // Creates a smooth 0 to 1 pulse
+            topStar.rotation.y = time * 0.3;
+            topStar.children[0].intensity = 3 + pulse * 5; // Light intensity from 3 to 8
+            const scale = 1 + pulse * 0.15; // Scale from 1 to 1.15
+            topStar.scale.set(scale, scale, scale);
+
+            // 2. Animate Particles
+            const positions = particleSystem.geometry.attributes.position.array;
+            const randoms = particleSystem.geometry.attributes.aRandom.array;
+            const sizes = particleSystem.geometry.attributes.size.array;
+            
+            let targetMix = 0.0;
+            if (STATE.mode === 'SCATTERED' || STATE.mode === 'FOCUSED') targetMix = 1.0;
+            
+            if (!particleSystem.userData.currentMix) particleSystem.userData.currentMix = 0;
+            particleSystem.userData.currentMix += (targetMix - particleSystem.userData.currentMix) * 0.05;
+            const mix = particleSystem.userData.currentMix;
+
+            for (let i = 0; i < positions.length / 3; i++) {
+                const i3 = i * 3;
+                const rand = randoms[i];
+
+                const ox = particleSystem.userData.originalPositions[i3];
+                const oy = particleSystem.userData.originalPositions[i3+1];
+                const oz = particleSystem.userData.originalPositions[i3+2];
+
+                const breath = Math.sin(time * 2.0 + rand * 10.0) * 0.05;
+                
+                const px = ox * (1.0 + breath);
+                const py = oy + breath;
+                const pz = oz * (1.0 + breath);
+
+                const sx = particleSystem.userData.scatteredPositions[i3];
+                const sy = particleSystem.userData.scatteredPositions[i3+1];
+                const sz = particleSystem.userData.scatteredPositions[i3+2];
+
+                positions[i3]     = px * (1 - mix) + sx * mix;
+                positions[i3 + 1] = py * (1 - mix) + sy * mix;
+                positions[i3 + 2] = pz * (1 - mix) + sz * mix;
+
+                const twinkle = 0.5 + 0.5 * Math.sin(time * 4.0 + rand * 20.0);
+                sizes[i] = (Math.random() * 0.4 + 0.1) * (1.0 + twinkle * 0.5);
+            }
+
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+            particleSystem.geometry.attributes.size.needsUpdate = true;
+
+            if (STATE.mode === 'GATHERED') {
+                particleSystem.rotation.y += 0.002;
+            }
+
+            // 3. Animate Photos
+            photos.forEach((p, idx) => {
+                let targetPos, targetScale;
+                const isFocused = (STATE.mode === 'FOCUSED' && idx === STATE.focusedPhotoIndex);
+
+                if (isFocused) {
+                    targetPos = new THREE.Vector3(0, 2, 18); // Centered position (Y=2 like camera)
+                    targetScale = new THREE.Vector3(1.8, 1.8, 1.8); // Make it smaller
+                    
+                    // Smoothly rotate to flat presentation
+                    const targetQuaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0));
+                    p.mesh.quaternion.slerp(targetQuaternion, 0.08);
+
+                } else {
+                    if (STATE.mode === 'SCATTERED' || STATE.mode === 'FOCUSED') {
+                        targetPos = p.scatteredPos;
+                        // If one photo is focused, shrink others. Otherwise, use original scale.
+                        targetScale = (STATE.mode === 'FOCUSED') ? new THREE.Vector3(0.01, 0.01, 0.01) : p.originalScale;
+                        
+                        if (STATE.mode === 'SCATTERED') {
+                           p.mesh.rotation.x += p.rotSpeed.x;
+                           p.mesh.rotation.y += p.rotSpeed.y;
+                        }
+                    } else { // GATHERED
+                        targetPos = p.originalPos;
+                        targetScale = p.originalScale;
+                        p.mesh.position.y += Math.sin(time + idx) * 0.002;
+                    }
+                }
+
+                // Apply smooth transitions
+                p.mesh.position.lerp(targetPos, 0.08);
+                p.mesh.scale.lerp(targetScale, 0.08);
+            });
+
+            // Camera Rotation
+            if (STATE.mode === 'SCATTERED') {
+                if (STATE.isHandDetected) {
+                    scene.rotation.y += (STATE.targetRotation.y - scene.rotation.y) * 0.1;
+                    scene.rotation.x += (STATE.targetRotation.x - scene.rotation.x) * 0.1;
+                }
+            } else {
+                 // Smoothly reset rotation in FOCUSED or GATHERED mode
+                scene.rotation.y += (0 - scene.rotation.y) * 0.1;
+                scene.rotation.x += (0 - scene.rotation.x) * 0.1;
+            }
+
+            composer.render();
+        }
+
+        animate();
+
+    </script>
+</body>
+</html>
